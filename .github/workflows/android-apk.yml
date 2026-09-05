@@ -1,0 +1,364 @@
+name: Build ProstoyPay APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Generate Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/java/ru/prostoypay/driver
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = 'ProstoyPay'
+          include ':app'
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+
+          android {
+              namespace 'ru.prostoypay.driver'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId 'ru.prostoypay.driver'
+                  minSdk 26
+                  targetSdk 35
+                  versionCode 1
+                  versionName '0.1.0'
+              }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="Prostoy.Pay"
+                  android:theme="@style/AppTheme">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".LocationService"
+                      android:exported="false"
+                      android:foregroundServiceType="location" />
+              </application>
+          </manifest>
+          EOF
+
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <resources>
+              <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:colorAccent">#101828</item>
+                  <item name="android:navigationBarColor">#F4F6F8</item>
+                  <item name="android:statusBarColor">#F4F6F8</item>
+                  <item name="android:windowLightStatusBar">true</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > app/src/main/java/ru/prostoypay/driver/LocationService.java <<'EOF'
+          package ru.prostoypay.driver;
+
+          import android.Manifest;
+          import android.app.*;
+          import android.content.*;
+          import android.content.pm.PackageManager;
+          import android.location.*;
+          import android.os.*;
+          import java.text.SimpleDateFormat;
+          import java.util.*;
+
+          public class LocationService extends Service implements LocationListener {
+              public static final String CHANNEL_ID = "prostoypay_tracking";
+              private LocationManager lm;
+
+              @Override public void onCreate() {
+                  super.onCreate();
+                  createChannel();
+                  Notification n = new Notification.Builder(this, CHANNEL_ID)
+                          .setContentTitle("Prostoy.Pay 褎懈泻褋懈褉褍械褌 芯卸懈写邪薪懈械")
+                          .setContentText("GPS 褋芯褏褉邪薪褟械褌褋褟 泻邪泻 写芯泻邪蟹邪褌械谢褜褋褌胁芯 锌褉芯褋褌芯褟")
+                          .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+                          .setOngoing(true).build();
+                  startForeground(7001, n);
+                  lm = (LocationManager) getSystemService(LOCATION_SERVICE);
+                  startGps();
+              }
+
+              private void startGps() {
+                  if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+                      checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) return;
+                  try { lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 60000L, 50f, this); } catch (Exception ignored) {}
+                  try { lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 60000L, 50f, this); } catch (Exception ignored) {}
+              }
+
+              @Override public void onLocationChanged(Location location) {
+                  SharedPreferences p = getSharedPreferences("pp", MODE_PRIVATE);
+                  String old = p.getString("evidence", "");
+                  String ts = new SimpleDateFormat("dd.MM HH:mm:ss", Locale.getDefault()).format(new Date());
+                  String line = ts + " 路 GPS ping 路 " + String.format(Locale.US, "%.5f, %.5f", location.getLatitude(), location.getLongitude());
+                  p.edit().putString("evidence", old + line + "\n").apply();
+              }
+
+              @Override public int onStartCommand(Intent intent, int flags, int startId) { return START_STICKY; }
+              @Override public void onDestroy() { if (lm != null) lm.removeUpdates(this); super.onDestroy(); }
+              @Override public android.os.IBinder onBind(Intent intent) { return null; }
+              @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
+              @Override public void onProviderEnabled(String provider) {}
+              @Override public void onProviderDisabled(String provider) {}
+
+              private void createChannel() {
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      NotificationChannel c = new NotificationChannel(CHANNEL_ID, "肖懈泻褋邪褑懈褟 锌褉芯褋褌芯褟", NotificationManager.IMPORTANCE_LOW);
+                      ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(c);
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/ru/prostoypay/driver/MainActivity.java <<'EOF'
+          package ru.prostoypay.driver;
+
+          import android.Manifest;
+          import android.app.*;
+          import android.content.*;
+          import android.content.pm.PackageManager;
+          import android.graphics.Color;
+          import android.graphics.Typeface;
+          import android.location.*;
+          import android.os.*;
+          import android.view.*;
+          import android.widget.*;
+          import java.text.SimpleDateFormat;
+          import java.util.*;
+
+          public class MainActivity extends Activity {
+              private static final int REQ_LOC = 42;
+              private final Handler h = new Handler(Looper.getMainLooper());
+              private SharedPreferences p;
+              private TextView status, timer, claim, evidence, gpsChip;
+              private Button primary, confirm, reset;
+              private long arrivalMs = 0L;
+              private boolean waiting = false;
+              private final int freeMinutes = 1; // test mode
+              private final double ratePerHour = 3000.0;
+
+              @Override protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  p = getSharedPreferences("pp", MODE_PRIVATE);
+                  arrivalMs = p.getLong("arrivalMs", 0L);
+                  waiting = p.getBoolean("waiting", false);
+                  requestPermissionsIfNeeded();
+                  setContentView(buildUi());
+                  refresh();
+                  h.post(ticker);
+              }
+
+              private View buildUi() {
+                  ScrollView sc = new ScrollView(this);
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setPadding(dp(18), dp(26), dp(18), dp(40));
+                  root.setBackgroundColor(Color.rgb(244,246,248));
+                  sc.addView(root);
+
+                  LinearLayout head = row();
+                  TextView logo = text("Prostoy.Pay", 28, true, Color.rgb(16,24,40));
+                  head.addView(logo, new LinearLayout.LayoutParams(0, WRAP(), 1));
+                  gpsChip = badge("GPS MANUAL", Color.rgb(102,112,133), Color.rgb(242,244,247));
+                  head.addView(gpsChip);
+                  root.addView(head);
+
+                  TextView sub = text("Android 路 褌械褋褌芯胁邪褟 胁械褉褋懈褟 胁芯写懈褌械谢褟", 14, false, Color.rgb(102,112,133));
+                  sub.setPadding(0,0,0,dp(14)); root.addView(sub);
+
+                  LinearLayout card = card();
+                  card.addView(text("袪袝袡小 #TEST-001", 11, true, Color.rgb(102,112,133)));
+                  card.addView(text("袪笑 孝械褋褌芯胁褘泄", 24, true, Color.rgb(16,24,40)));
+                  card.addView(text("袦芯褋泻胁邪 路 褌械褋褌芯胁褘泄 邪写褉械褋", 14, false, Color.rgb(102,112,133)));
+                  card.addView(space(14));
+                  card.addView(text("袟邪泻邪蟹褔懈泻", 12, false, Color.rgb(102,112,133)));
+                  card.addView(text("袨袨袨 芦袪芯屑邪褕泻邪禄", 16, true, Color.rgb(16,24,40)));
+                  card.addView(text("袗胁褌芯屑芯斜懈谢褜", 12, false, Color.rgb(102,112,133)));
+                  card.addView(text("袗123袗袗 77", 16, true, Color.rgb(16,24,40)));
+                  card.addView(text("孝袝小孝: 斜械褋锌谢邪褌薪芯 1 屑懈薪 路 3 000 鈧�/褔 路 锌芯屑懈薪褍褌薪芯", 13, true, Color.rgb(181,71,8)));
+                  root.addView(card, lpMatch());
+
+                  LinearLayout timerCard = card();
+                  status = text("袚袨孝袨袙 袣 袪袝袡小校", 11, true, Color.rgb(102,112,133)); timerCard.addView(status);
+                  timer = text("0 屑懈薪", 42, true, Color.rgb(16,24,40)); timerCard.addView(timer);
+                  claim = text("袪邪褋褔褢褌薪芯械 薪邪褔懈褋谢械薪懈械: 0 鈧�", 14, true, Color.rgb(71,84,103)); timerCard.addView(claim);
+                  root.addView(timerCard, lpMatch());
+
+                  primary = button("携 锌褉懈斜褘谢 薪邪 褌芯褔泻褍", true);
+                  primary.setOnClickListener(v -> { if (!waiting) arrive(); else finish(); });
+                  root.addView(primary, lpMatch());
+
+                  confirm = button("携 胁褋褢 械褖褢 卸写褍", false);
+                  confirm.setOnClickListener(v -> captureEvidence("袩芯写褌胁械褉卸写械薪懈械 芯卸懈写邪薪懈褟"));
+                  root.addView(confirm, lpMatch());
+
+                  reset = button("小斜褉芯褋懈褌褜 褌械褋褌芯胁褘泄 褉械泄褋", false);
+                  reset.setOnClickListener(v -> resetTrip());
+                  root.addView(reset, lpMatch());
+
+                  LinearLayout ev = card();
+                  ev.addView(text("EVIDENCE TRAIL", 11, true, Color.rgb(102,112,133)));
+                  evidence = text("袩芯泻邪 薪械褌 褋芯斜褘褌懈泄", 13, false, Color.rgb(71,84,103));
+                  evidence.setPadding(0,dp(8),0,0); ev.addView(evidence);
+                  root.addView(ev, lpMatch());
+                  return sc;
+              }
+
+              private void arrive() {
+                  captureEvidence("袩褉懈斜褘褌懈械 薪邪 褌芯褔泻褍");
+                  arrivalMs = System.currentTimeMillis(); waiting = true;
+                  p.edit().putLong("arrivalMs", arrivalMs).putBoolean("waiting", true).apply();
+                  Intent s = new Intent(this, LocationService.class);
+                  if (Build.VERSION.SDK_INT >= 26) startForegroundService(s); else startService(s);
+                  gpsChip.setText("GPS TRACKING");
+                  refresh();
+              }
+
+              private void finish() {
+                  captureEvidence("袩芯谐褉褍蟹泻邪/胁褘谐褉褍蟹泻邪 蟹邪胁械褉褕械薪邪");
+                  waiting = false; p.edit().putBoolean("waiting", false).apply();
+                  stopService(new Intent(this, LocationService.class));
+                  gpsChip.setText("GPS MANUAL");
+                  refresh();
+              }
+
+              private void resetTrip() {
+                  stopService(new Intent(this, LocationService.class));
+                  p.edit().clear().apply(); arrivalMs = 0L; waiting = false;
+                  refresh(); Toast.makeText(this, "孝械褋褌芯胁褘泄 褉械泄褋 褋斜褉芯褕械薪", Toast.LENGTH_SHORT).show();
+              }
+
+              private void captureEvidence(String label) {
+                  if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+                      checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                      requestPermissionsIfNeeded(); return;
+                  }
+                  LocationManager lm = (LocationManager)getSystemService(LOCATION_SERVICE);
+                  Location loc = null;
+                  try { loc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER); } catch(Exception ignored) {}
+                  if (loc == null) try { loc = lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER); } catch(Exception ignored) {}
+                  String ts = new SimpleDateFormat("dd.MM HH:mm:ss", Locale.getDefault()).format(new Date());
+                  String coords = loc == null ? "GPS 芯卸懈写邪械褌褋褟" : String.format(Locale.US,"%.5f, %.5f",loc.getLatitude(),loc.getLongitude());
+                  String old = p.getString("evidence", "");
+                  p.edit().putString("evidence", old + ts + " 路 " + label + " 路 " + coords + "\n").apply();
+                  refreshEvidence();
+              }
+
+              private void refresh() {
+                  if (waiting) {
+                      long sec = Math.max(0,(System.currentTimeMillis()-arrivalMs)/1000);
+                      long min = sec/60;
+                      long billableSec = Math.max(0, sec-freeMinutes*60L);
+                      double amount = (billableSec/3600.0)*ratePerHour;
+                      status.setText(billableSec>0 ? "袩袥袗孝袧袨袝 袨袞袠袛袗袧袠袝" : "袘袝小袩袥袗孝袧袨袝 袨袞袠袛袗袧袠袝");
+                      timer.setText(String.format(Locale.getDefault(), "%d:%02d", min, sec%60));
+                      claim.setText(String.format(Locale.getDefault(), "袪邪褋褔褢褌薪芯械 薪邪褔懈褋谢械薪懈械: %.0f 鈧�", amount));
+                      primary.setText("袩芯谐褉褍蟹泻邪 / 胁褘谐褉褍蟹泻邪 蟹邪胁械褉褕械薪邪");
+                      confirm.setVisibility(View.VISIBLE);
+                      gpsChip.setText("GPS TRACKING");
+                  } else if (arrivalMs > 0) {
+                      status.setText("袪袝袡小 袟袗袙袝袪楔衼袧");
+                      primary.setText("袪械泄褋 蟹邪胁械褉褕褢薪"); primary.setEnabled(false);
+                      confirm.setVisibility(View.GONE);
+                  } else {
+                      status.setText("袚袨孝袨袙 袣 袪袝袡小校"); timer.setText("0 屑懈薪"); claim.setText("袪邪褋褔褢褌薪芯械 薪邪褔懈褋谢械薪懈械: 0 鈧�");
+                      primary.setText("携 锌褉懈斜褘谢 薪邪 褌芯褔泻褍"); primary.setEnabled(true); confirm.setVisibility(View.GONE);
+                  }
+                  refreshEvidence();
+              }
+
+              private void refreshEvidence() {
+                  String e = p.getString("evidence", ""); evidence.setText(e.isEmpty()?"袩芯泻邪 薪械褌 褋芯斜褘褌懈泄":e);
+              }
+
+              private final Runnable ticker = new Runnable(){ public void run(){ refresh(); h.postDelayed(this,1000); }};
+
+              private void requestPermissionsIfNeeded() {
+                  ArrayList<String> a = new ArrayList<>();
+                  if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) a.add(Manifest.permission.ACCESS_FINE_LOCATION);
+                  if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) a.add(Manifest.permission.POST_NOTIFICATIONS);
+                  if (!a.isEmpty()) requestPermissions(a.toArray(new String[0]), REQ_LOC);
+              }
+
+              private LinearLayout card(){ LinearLayout l=new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); l.setPadding(dp(20),dp(20),dp(20),dp(20)); l.setBackgroundColor(Color.WHITE); LinearLayout.LayoutParams p=lpMatch(); p.setMargins(0,0,0,dp(14)); l.setLayoutParams(p); return l; }
+              private LinearLayout row(){ LinearLayout l=new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); l.setGravity(Gravity.CENTER_VERTICAL); return l; }
+              private TextView text(String s,int sp,boolean bold,int c){ TextView t=new TextView(this); t.setText(s); t.setTextSize(sp); t.setTextColor(c); if(bold)t.setTypeface(Typeface.DEFAULT,Typeface.BOLD); t.setPadding(0,dp(4),0,dp(4)); return t; }
+              private TextView badge(String s,int fg,int bg){ TextView t=text(s,10,true,fg); t.setBackgroundColor(bg); t.setPadding(dp(10),dp(7),dp(10),dp(7)); return t; }
+              private Button button(String s,boolean dark){ Button b=new Button(this); b.setText(s); b.setTextSize(16); b.setAllCaps(false); b.setTypeface(Typeface.DEFAULT,Typeface.BOLD); if(dark){b.setTextColor(Color.WHITE); b.setBackgroundColor(Color.rgb(16,24,40));} else {b.setTextColor(Color.rgb(16,24,40)); b.setBackgroundColor(Color.WHITE);} LinearLayout.LayoutParams p=lpMatch(); p.height=dp(60); p.setMargins(0,0,0,dp(12)); b.setLayoutParams(p); return b; }
+              private View space(int d){ View v=new View(this); v.setLayoutParams(new LinearLayout.LayoutParams(1,dp(d))); return v; }
+              private LinearLayout.LayoutParams lpMatch(){ return new LinearLayout.LayoutParams(MATCH(),WRAP()); }
+              private int dp(int x){ return Math.round(x*getResources().getDisplayMetrics().density); }
+              private int MATCH(){ return ViewGroup.LayoutParams.MATCH_PARENT; }
+              private int WRAP(){ return ViewGroup.LayoutParams.WRAP_CONTENT; }
+          }
+          EOF
+
+      - name: Build debug APK
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk ProstoyPay-v0.1-test.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProstoyPay-APK
+          path: ProstoyPay-v0.1-test.apk
+          if-no-files-found: error
