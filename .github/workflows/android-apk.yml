@@ -245,7 +245,7 @@ jobs:
                   root.addView(timerCard, lpMatch());
 
                   primary = button("携 锌褉懈斜褘谢 薪邪 褌芯褔泻褍", true);
-                  primary.setOnClickListener(v -> { if (!waiting) arrive(); else finish(); });
+                  primary.setOnClickListener(v -> { if (!waiting) arrive(); else finishTrip(); });
                   root.addView(primary, lpMatch());
 
                   confirm = button("携 胁褋褢 械褖褢 卸写褍", false);
@@ -274,7 +274,7 @@ jobs:
                   refresh();
               }
 
-              private void finish() {
+              private void finishTrip() {
                   captureEvidence("袩芯谐褉褍蟹泻邪/胁褘谐褉褍蟹泻邪 蟹邪胁械褉褕械薪邪");
                   waiting = false; p.edit().putBoolean("waiting", false).apply();
                   stopService(new Intent(this, LocationService.class));
